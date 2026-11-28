@@ -23,6 +23,146 @@ def require_service(module: str):
     return service
 
 
+# ----------------------------------------------------------------------
+# 传输接续 / 汇编收件（SQLite 持久化）
+# 这些固定路径必须注册在 /{module} 之前。
+# ----------------------------------------------------------------------
+@router.get("/transfer/recovery-report")
+def transfer_recovery_report() -> dict[str, Any]:
+    """重启后值班员查看的接续复查报告：原尝试次数、已收资料、待补传。"""
+
+    service = require_service("data_transfer")
+    return service.recovery_report()
+
+
+@router.post("/transfer/recovery-report")
+def transfer_recovery_report_post() -> dict[str, Any]:
+    return transfer_recovery_report()
+
+
+@router.get("/transfer/conflicts")
+def transfer_conflicts(status: str | None = Query(default=None)) -> dict[str, Any]:
+    service = require_service("data_transfer")
+    conflicts = service.conflicts(status=status)
+    return {"ok": True, "conflicts": conflicts, "total": len(conflicts)}
+
+
+@router.post("/transfer/conflicts/{conflict_id}/resolve")
+def transfer_resolve_conflict(conflict_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    decision = str(payload.get("decision") or "").strip()
+    service = require_service("data_transfer")
+    return service.resolve_conflict(conflict_id=conflict_id, decision=decision)
+
+
+@router.post("/transfer/migrate")
+def transfer_migrate(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = payload or {}
+    simulate = payload.get("simulate_failure_after")
+    service = require_service("data_transfer")
+    return service.migrate(
+        simulate_failure_after=int(simulate) if simulate is not None else None,
+    )
+
+
+@router.post("/transfer/reconcile")
+def transfer_reconcile() -> dict[str, Any]:
+    service = require_service("data_transfer")
+    return service.reconcile()
+
+
+@router.post("/transfer/confirmations")
+def transfer_confirm(payload: dict[str, Any]) -> dict[str, Any]:
+    """核收一次汇编确认请求（可凭传输接续凭证）。"""
+
+    service = require_service("data_transfer")
+    return service.confirm(
+        credential=_optional_text(payload.get("credential")),
+        transfer_id=_optional_int(payload.get("transfer_id")),
+        compile_id=_optional_int(payload.get("compile_id")),
+        confirmation_id=_optional_text(payload.get("confirmation_id")),
+        received_items=_items(payload.get("received_items")),
+        missing_items=_items(payload.get("missing_items")),
+        outcome=_optional_text(payload.get("outcome")),
+        expected_items=_items(payload.get("expected_items")),
+        attempt_id=_optional_int(payload.get("attempt_id")),
+    )
+
+
+@router.get("/transfer/credentials/{credential}")
+def transfer_by_credential(credential: str) -> dict[str, Any]:
+    service = require_service("data_transfer")
+    result = service.by_credential(credential)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"传输接续凭证 {credential} 不存在")
+    return {"ok": True, **result}
+
+
+@router.post("/results_compile/{entry_id}/receipts")
+def compile_request_receipt(entry_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+    service = require_service("results_compile")
+    transfer_id = _optional_int(payload.get("transfer_id"))
+    if transfer_id is None:
+        return {"ok": False, "message": "必须提供关联的 transfer_id"}
+    return service.request_receipt(
+        entry_id,
+        transfer_id=transfer_id,
+        expected_items=_items(payload.get("expected_items")),
+    )
+
+
+@router.get("/results_compile/{entry_id}/receipts")
+def compile_receipts(entry_id: int) -> dict[str, Any]:
+    service = require_service("results_compile")
+    return service.receipt_requests(entry_id)
+
+
+@router.get("/results_compile/{entry_id}/recovery")
+def compile_recovery(entry_id: int) -> dict[str, Any]:
+    service = require_service("results_compile")
+    return service.recovery(entry_id)
+
+
+@router.post("/results_compile/{entry_id}/confirmations")
+def compile_confirm(entry_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+    service = require_service("results_compile")
+    return service.confirm_receipt(
+        entry_id,
+        credential=_optional_text(payload.get("credential")),
+        transfer_id=_optional_int(payload.get("transfer_id")),
+        confirmation_id=_optional_text(payload.get("confirmation_id")),
+        received_items=_items(payload.get("received_items")),
+        missing_items=_items(payload.get("missing_items")),
+        outcome=_optional_text(payload.get("outcome")),
+        expected_items=_items(payload.get("expected_items")),
+    )
+
+
+def _optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _items(value: Any) -> list[str] | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return [part.strip() for part in value.split(",") if part.strip()]
+    if isinstance(value, (list, tuple)):
+        return [str(part).strip() for part in value if str(part).strip()]
+    return None
+
+
 @router.get("/snapshot/{module}")
 def module_snapshot(module: str) -> dict[str, Any]:
     """返回模块跨域快照：本模块数据 + 关联模块状态。"""

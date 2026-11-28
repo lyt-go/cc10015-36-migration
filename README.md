@@ -77,5 +77,29 @@ npm run dev
 - 列表接口统一返回 `{ items, total, page, size }`，动作接口统一返回 `{ ok, message }`。
 - 状态流转只允许在 `app/services` 里改，路由层不做业务判断。
 
+## 传输接续与汇编收件（SQLite）
+
+`data_transfer` 的传输尝试和 `results_compile` 的汇编收件从进程内存迁移到了
+SQLite（默认 `backend/var/app.sqlite3`，可用 `APP_DB_PATH` 覆盖）。其余演示
+模块仍是内存数据。
+
+- **动作接口不变**：`发起传输` / `确认完成` / `重试传输` 等仍走
+  `POST /api/{module}/{id}/actions`；已有的待传输、传输中、已失败记录照常列出和打开。
+- **接续凭证**：每条传输记录有稳定的 `接续凭证`（`credential`），进程重启后
+  可用 `GET /api/transfer/credentials/{credential}` 找回并继续办理收件。
+- **重试与输入不重算**：尝试按 `retry_count + 1` 登记，`retry_count` 和
+  输入字段原样保留；历史尝试会补齐但不会重复登记。
+- **汇编收件**：`POST /api/results_compile/{id}/receipts` 关联传输接续凭证；
+  `POST /api/results_compile/{id}/confirmations` 核收确认。一次确认在同一事务里
+  同时写入接收确认、尝试终态和汇编完整性，不会一边办结、另一边永远缺件。
+- **幂等**：同一 `confirmation_id` 重复送达只核收一次；`POST /api/transfer/migrate`
+  可安全重试（`simulate_failure_after` 用于演练中断），不会重复登记尝试。
+- **冲突研判**：确认到达时若尝试仍在迁移或已办结，返回 `status=待研判` 并生成冲突记录；
+  值班员通过 `POST /api/transfer/conflicts/{conflict_id}/resolve` 选择
+  `继续办结` 或 `恢复待确认`。后者把原缺项退回传输记录，复查报告据此给出下一次补传。
+- **单一有效确认**：每个接续过程最多一份 `status=有效` 的接收确认，由 SQLite 部分唯一索引保障。
+- **重启复查**：`GET /api/transfer/recovery-report` 返回原尝试次数、已收资料、缺项与下一次补传；
+  `POST /api/transfer/reconcile` 修复重启遗留的单边终态。
+
 领域：应用开发
 子方向：服务端开发
